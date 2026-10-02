@@ -1,5 +1,11 @@
 const connection = require("../../../config/db"); // mysql2 pool with .promise()
-const { resolveElection } = require("../shared/ballotConfig.service");
+// Resolve an explicit election ID or the newest election for "current".
+async function resolveElection(electionId) {
+    const [rows] = electionId === 'current'
+        ? await connection.execute('SELECT * FROM elections ORDER BY election_id DESC LIMIT 1')
+        : await connection.execute('SELECT * FROM elections WHERE election_id = ? LIMIT 1', [electionId]);
+    return rows[0] || null;
+}
 
 // Create a new position for an election (e.g. "President", "Senator")
 exports.addPosition = async (req, res) => {

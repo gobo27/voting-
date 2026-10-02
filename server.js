@@ -3,7 +3,7 @@ const express = require('express');
 //CROSS ORIGIN RESOURCE SHARING
 const cors = require('cors');
 //ENVIRONMENT VARIABLES
-require ('dotenv').config();
+require('dotenv').config({path: require('path').join(__dirname, '.env')});
 //DATABASE CONNECTION
 const db=require('./config/db.js');
 //ROUTES
@@ -15,9 +15,19 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({extended:true})) //this will allow to read the url body tags
 
+app.use((req,res,next)=>{
+ req.cookies={};
+ for(const part of (req.headers.cookie || '').split(';')) {
+  const i=part.indexOf('='); if(i<0) continue;
+  try {req.cookies[part.slice(0,i).trim()]=decodeURIComponent(part.slice(i+1));} catch {}
+ }
+ next();
+});
 //use routes
 app.use('/api', routes)
 
-app.listen(process.env.PORT, () => {
-    console.log(`Server is running on port ${process.env.PORT}`);
+app.use(express.static(require('path').join(__dirname,'../voting-frontend-/Frontend')));
+const port=process.env.PORT || 3000;
+app.listen(port, () => {
+    console.log(`Server is running on port ${port}`);
 })

@@ -6,16 +6,16 @@ const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "1h";
 
 exports.login = async (req, res) => {
     try {
-        const { email, password } = req.body;
+        const { email, password, role } = req.body || {};
 
-        if (!email || !password) {
+        if (typeof email !== "string" || !email.trim() || typeof password !== "string" || !password) {
             return res.status(400).json({ message: "Email and password are required" });
         }
 
         // Standardized to 'users' table
         const [rows] = await connection.execute(
             "SELECT * FROM users WHERE email = ? LIMIT 1",
-            [email],
+            [email.trim()],
         );
 
         if (rows.length === 0) {
@@ -26,9 +26,10 @@ exports.login = async (req, res) => {
 
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) {
-            return res.status(401).json({ message: "Invalid Password" });
+            return res.status(401).json({ message: "Invalid credentials" });
         }
 
+        if (role && role !== user.role) return res.status(403).json({message: 'This account cannot access the selected role'});
         const token = jwt.sign(
             { id: user.id, email: user.email, role: user.role },
             JWT_SECRET,
@@ -39,7 +40,7 @@ exports.login = async (req, res) => {
             httpOnly: true,
             secure: process.env.NODE_ENV === "production",
             sameSite: "strict",
-            maxAge: 60 * 60 * 1000,
+            maxAge: Math.max(0, jwt.decode(token).exp * 1000 - Date.now()),
         });
 
         return res.status(200).json({

@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const candidateController = require("./adviser.addCandidate");
-const verifyToken = require("../middleware");
+const verifyToken = require("../../sheared/middleware");
 
 // Every route below requires a valid token AND the adviser role
 router.use(verifyToken, verifyToken.isAdviser);
