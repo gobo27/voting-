@@ -1,5 +1,5 @@
 const connection = require("../../../config/db"); // mysql2 pool with .promise()
-const { resolveElection } = require("../shared/ballotConfig.service");
+const ballotConfig = require('../../sheared/');
 
 // Create a new position for an election (e.g. "President", "Senator")
 exports.addPosition = async (req, res) => {

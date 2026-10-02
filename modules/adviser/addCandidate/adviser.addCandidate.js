@@ -1,6 +1,6 @@
 const connection = require("../../../config/db"); // mysql2 pool with .promise()
 
-// Adviser adds a candidate directly (no separate voter record to link to)
+// 1. ADD CANDIDATE (POST)
 exports.addCandidate = async (req, res) => {
     try {
         const { name, course, grade_level, party_list, position_id, display_order } = req.body;
@@ -12,7 +12,7 @@ exports.addCandidate = async (req, res) => {
         // Position must exist
         const [positionRows] = await connection.execute(
             "SELECT position_id FROM positions WHERE position_id = ? LIMIT 1",
-            [position_id],
+            [position_id]
         );
         if (positionRows.length === 0) {
             return res.status(404).json({ message: "Position not found" });
@@ -20,7 +20,7 @@ exports.addCandidate = async (req, res) => {
 
         const [result] = await connection.execute(
             "INSERT INTO candidates (name, course, grade_level, party_list, position_id, display_order) VALUES (?, ?, ?, ?, ?, ?)",
-            [name, course || null, grade_level || null, party_list || null, position_id, display_order || 1],
+            [name, course || null, grade_level || null, party_list || null, position_id, display_order || 1]
         );
 
         return res.status(201).json({
@@ -41,40 +41,42 @@ exports.addCandidate = async (req, res) => {
     }
 };
 
-// List candidates, optionally filtered by ?position_id=
-exports.getCandidates = async (req, res) => {
+// 2. UPDATE CANDIDATE (PUT)
+exports.updateCandidate = async (req, res) => {
     try {
-        const { position_id } = req.query;
+        const { id } = req.params;
+        const { name, course, grade_level, party_list, position_id, display_order } = req.body;
 
-        let query = `
-            SELECT c.candidate_id, c.name, c.course, c.grade_level, c.party_list,
-                   c.position_id, c.display_order, p.title AS position_title
-            FROM candidates c
-            JOIN positions p ON p.position_id = c.position_id
-        `;
-        const params = [];
-        if (position_id) {
-            query += " WHERE c.position_id = ?";
-            params.push(position_id);
+        if (!name || !position_id) {
+            return res.status(400).json({ message: "name and position_id are required" });
         }
-        query += " ORDER BY c.position_id, c.display_order";
 
-        const [rows] = await connection.execute(query, params);
-        return res.status(200).json({ candidates: rows });
+        const [result] = await connection.execute(
+            `UPDATE candidates 
+             SET name = ?, course = ?, grade_level = ?, party_list = ?, position_id = ?, display_order = ?
+             WHERE candidate_id = ?`,
+            [name, course || null, grade_level || null, party_list || null, position_id, display_order || 1, id]
+        );
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ message: "Candidate not found" });
+        }
+
+        return res.status(200).json({ message: "Candidate updated successfully" });
     } catch (error) {
-        console.error("Get candidates error:", error);
+        console.error("Update candidate error:", error);
         return res.status(500).json({ message: "Internal server error" });
     }
 };
 
-// Remove a candidate
+// 3. DELETE CANDIDATE (DELETE)
 exports.deleteCandidate = async (req, res) => {
     try {
         const { id } = req.params;
 
         const [result] = await connection.execute(
             "DELETE FROM candidates WHERE candidate_id = ?",
-            [id],
+            [id]
         );
 
         if (result.affectedRows === 0) {

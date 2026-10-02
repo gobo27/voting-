@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const positionController = require("./addPosition.controller");
-const verifyToken = require("../middleware");
+const verifyToken = require("../../sheared/middleware");
 
 router.use(verifyToken, verifyToken.requireRole("super_admin", "committee", "adviser"));
 

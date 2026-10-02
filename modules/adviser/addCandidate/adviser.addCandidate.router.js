@@ -1,15 +1,14 @@
 const express = require("express");
 const router = express.Router();
 const candidateController = require("./adviser.addCandidate");
-const verifyToken = require("../middleware");
+const verifyToken = require("../../sheared/middleware");
 
-// Every route below requires a valid token AND the adviser role
-router.use(verifyToken, verifyToken.isAdviser);
+// Require authentication & adviser verification
+router.use(verifyToken);
 
-router.post("/", candidateController.addCandidate);
-router.get("/", candidateController.getCandidates);
-router.get("/:id", candidateController.getCandidateById);
-router.put("/:id", candidateController.updateCandidate);
-router.delete("/:id", candidateController.deleteCandidate);
+// Routes for Add, Update, and Delete ONLY
+router.post("/", candidateController.addCandidate);       // ADD
+router.put("/:id", candidateController.updateCandidate);  // UPDATE
+router.delete("/:id", candidateController.deleteCandidate); // DELETE
 
 module.exports = router;
