@@ -72,28 +72,28 @@ exports.me = (req, res) => {
     return res.status(200).json({ user: req.user });
 };
 
-// exports.register = async (req, res) => {
-//     try {
-//         const { name, email, password, role } = req.body;
+exports.register = async (req, res) => {
+    try {
+        const { name, email, password, role } = req.body;
 
-//         if (!name || !email || !password || !role) {
-//             return res.status(400).json({ message: "All fields are required" });
-//         }
+        if (!name || !email || !password || !role) {
+            return res.status(400).json({ message: "All fields are required" });
+        }
 
-//         const hashedPassword = await bcrypt.hash(password, 10);
+        const hashedPassword = await bcrypt.hash(password, 10);
 
-//         // Standardized to 'users' table
-//         const [result] = await connection.execute(
-//             "INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)",
-//             [name, email, hashedPassword, role]
-//         );
+        // Standardized to 'users' table
+        const [result] = await connection.execute(
+            "INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)",
+            [name, email, hashedPassword, role]
+        );
 
-//         return res.status(201).json({
-//             message: "User registered successfully!",
-//             userId: result.insertId
-//         });
-//     } catch (error) {
-//         console.error("Register error:", error);
-//         return res.status(500).json({ message: "Internal server error" });
-//     }
-// };
+        return res.status(201).json({
+            message: "User registered successfully!",
+            userId: result.insertId
+        });
+    } catch (error) {
+        console.error("Register error:", error);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+};
