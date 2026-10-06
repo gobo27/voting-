@@ -3,7 +3,7 @@ const router = express.Router();
 const ballotController = require("./creatingballot.controller");
 const verifyToken = require("../../sheared/middleware");
 
-router.use(verifyToken, verifyToken.requireRole("super_admin", "committee"));
+router.use(verifyToken, verifyToken.requireRole("super_admin", "committee","adviser"));
 
 router.post("/templates", ballotController.createTemplate);
 router.get("/templates/election/:election_id", ballotController.getTemplatesByElection);

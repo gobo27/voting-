@@ -3,7 +3,7 @@ const express = require("express");
 const router = express.Router();
 const authentication = require("./signin.controller");
 const verifyToken = require("../sheared/middleware"); // Adjust path if needed
-const { requireRole, isAdmin, isAdviser } = require("../sheared/middleware"); // Imports role gates[cite: 8]
+const { requireRole isAdviser, isCommittee} = require("../sheared/middleware"); // Imports role gates[cite: 8]
 
 // Public endpoints
 router.post("/", authentication.login); // Login endpoint[cite: 2, 3]
