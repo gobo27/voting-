@@ -81,58 +81,121 @@ exports.getTallies = async (req, res) => {
     }
 };
 
-// One combined payload for a dashboard page: election info + candidates grouped by
-// position, each with its running vote count already attached.
+
 exports.getOverview = async (req, res) => {
     try {
         const { election_id } = req.params;
-        const election = await getElectionOrFail(election_id, res);
-        if (!election) return;
 
-        const [candidateRows] = await connection.execute(
-            `SELECT c.candidate_id, c.name, c.course, c.grade_level, c.party_list,
-                    c.position_id, c.display_order, p.title AS position_title
-             FROM candidates c
-             JOIN positions p ON p.position_id = c.position_id
-             WHERE p.election_id = ?
-             ORDER BY p.display_order, c.display_order`,
-            [election_id],
-        );
-
-        const [tallyRows] = await connection.execute(
-            "SELECT position_id, candidate_id, total_votes FROM v_live_tallies WHERE election_id = ?",
-            [election_id],
-        );
-        const votesByCandidate = {};
-        for (const t of tallyRows) {
-            votesByCandidate[t.candidate_id] = t.total_votes;
-        }
-
-        const positions = {};
-        for (const c of candidateRows) {
-            if (!positions[c.position_id]) {
-                positions[c.position_id] = {
-                    position_id: c.position_id,
-                    position_title: c.position_title,
-                    candidates: [],
-                };
-            }
-            positions[c.position_id].candidates.push({
-                candidate_id: c.candidate_id,
-                name: election.mask_names ? `Candidate #${c.candidate_id}` : c.name,
-                course: c.course,
-                grade_level: c.grade_level,
-                party_list: c.party_list,
-                total_votes: votesByCandidate[c.candidate_id] || 0,
+        if (!/^[1-9]\d*$/.test(String(election_id))) {
+            return res.status(400).json({
+                message: "Invalid election ID"
             });
         }
 
+        const [elections] = await connection.execute(
+            `SELECT election_id, title, start_time, end_time,
+                    status, is_active, mask_names
+             FROM elections
+             WHERE election_id = ?`,
+            [election_id]
+        );
+
+        if (!elections.length) {
+            return res.status(404).json({
+                message: "Election not found"
+            });
+        }
+
+        const election = elections[0];
+
+        const [positions] = await connection.execute(
+            `SELECT position_id, title AS position_title,
+                    max_selection, display_order
+             FROM positions
+             WHERE election_id = ?
+             ORDER BY display_order, position_id`,
+            [election_id]
+        );
+
+        const [candidates] = await connection.execute(
+            `SELECT
+                c.candidate_id,
+                c.position_id,
+                c.name,
+                c.course,
+                c.grade_level,
+                c.party_list,
+                c.display_order,
+                COUNT(bv.vote_id) AS total_votes
+             FROM candidates c
+             LEFT JOIN ballot_votes bv
+                ON bv.candidate_id = c.candidate_id
+                AND bv.position_id = c.position_id
+                AND EXISTS (
+                    SELECT 1
+                    FROM scanned_ballots sb
+                    WHERE sb.ballot_id = bv.ballot_id
+                      AND sb.election_id = ?
+                )
+             WHERE c.election_id = ?
+             GROUP BY
+                c.candidate_id,
+                c.position_id,
+                c.name,
+                c.course,
+                c.grade_level,
+                c.party_list,
+                c.display_order
+             ORDER BY c.display_order, c.candidate_id`,
+            [election_id, election_id]
+        );
+
+        const closed =
+            String(election.status).toLowerCase() === "completed";
+
+        const revealNames =
+            closed && !Boolean(election.mask_names);
+
+        const result = positions.map(position => ({
+            position_id: position.position_id,
+            position_title: position.position_title,
+            max_selection: position.max_selection,
+            candidates: candidates
+                .filter(c => c.position_id === position.position_id)
+                .map(c => ({
+                    candidate_id: c.candidate_id,
+                    name: revealNames
+                        ? c.name
+                        : `Candidate #${c.candidate_id}`,
+                    course: c.course,
+                    grade_level: c.grade_level,
+                    party_list: c.party_list,
+                    total_votes: Number(c.total_votes)
+                }))
+        }));
+
+        const [ballotCount] = await connection.execute(
+            `SELECT COUNT(*) AS total
+             FROM scanned_ballots
+             WHERE election_id = ?`,
+            [election_id]
+        );
+
         return res.status(200).json({
             election,
-            positions: Object.values(positions),
+            positions: result,
+            statistics: {
+                scanned_ballots: Number(ballotCount[0].total),
+                total_candidates: candidates.length
+            }
         });
+
     } catch (error) {
-        console.error("Get dashboard overview error:", error);
-        return res.status(500).json({ message: "Internal server error" });
+        console.error("Dashboard overview error:", error);
+
+        return res.status(500).json({
+            message: "Internal server error"
+        });
     }
 };
+

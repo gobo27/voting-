@@ -1,142 +1,537 @@
-const connection = require("../../../config/db"); // mysql2 pool with .promise()
-// const ballotConfig = require('../../../shared/ballotConfig.service');
 
-// Create a new position for an election (e.g. "President", "Senator")
-exports.addPosition = async (req, res) => {
+const connection = require("../../../config/db");
+
+// ================= HELPERS =================
+
+function cleanTitle(value) {
+    return typeof value === "string"
+        ? value.trim().replace(/\s+/g, " ")
+        : "";
+}
+
+function validId(value) {
+    const id = Number(value);
+    return Number.isSafeInteger(id) && id > 0;
+}
+
+function handleError(res, label, error) {
+    console.error(label, error);
+
+    return res.status(500).json({
+        message: "Internal server error"
+    });
+}
+
+// Resolve the current election or a specific election.
+// Specific IDs are allowed for reading election history.
+async function resolveElection(value) {
+    if (value === "current") {
+        const [rows] = await connection.execute(
+            `SELECT election_id, title, status,
+                    is_active, is_current, archived_at
+             FROM elections
+             WHERE is_current = 1
+               AND archived_at IS NULL
+             LIMIT 1`
+        );
+
+        return rows[0] || null;
+    }
+
+    if (!validId(value)) {
+        return null;
+    }
+
+    const [rows] = await connection.execute(
+        `SELECT election_id, title, status,
+                is_active, is_current, archived_at
+         FROM elections
+         WHERE election_id = ?
+         LIMIT 1`,
+        [Number(value)]
+    );
+
+    return rows[0] || null;
+}
+
+// Current election must not be completed or archived.
+function canEdit(election) {
+    return Boolean(
+        election &&
+        Number(election.is_current) === 1 &&
+        election.archived_at == null &&
+        election.status !== "completed"
+    );
+}
+
+// Lock the current election while modifying positions.
+// This helps prevent archive and position changes from
+// overlapping within a transaction.
+async function withCurrentElection(callback) {
+    const db = await connection.getConnection();
+
     try {
-        const { election_id, title, max_selection, display_order } = req.body;
+        await db.beginTransaction();
 
-        if (!election_id || !title) {
-            return res.status(400).json({ message: "election_id and title are required" });
-        }
-
-        const [electionRows] = await connection.execute(
-            "SELECT election_id FROM elections WHERE election_id = ? LIMIT 1",
-            [election_id],
-        );
-        if (electionRows.length === 0) {
-            return res.status(404).json({ message: "Election not found" });
-        }
-
-        const [existing] = await connection.execute(
-            "SELECT position_id FROM positions WHERE election_id = ? AND title = ? LIMIT 1",
-            [election_id, title],
-        );
-        if (existing.length > 0) {
-            return res.status(409).json({ message: "A position with that title already exists for this election" });
-        }
-
-        const [result] = await connection.execute(
-            "INSERT INTO positions (election_id, title, max_selection, display_order) VALUES (?, ?, ?, ?)",
-            [election_id, title, max_selection || 1, display_order || 1],
+        const [rows] = await db.execute(
+            `SELECT election_id, status, is_current, archived_at
+             FROM elections
+             WHERE is_current = 1
+               AND archived_at IS NULL
+             LIMIT 1
+             FOR UPDATE`
         );
 
-        return res.status(201).json({
-            message: "Position added successfully",
-            position: {
-                position_id: result.insertId,
-                election_id,
-                title,
-                max_selection: max_selection || 1,
-                display_order: display_order || 1,
-            },
-        });
+        const election = rows[0] || null;
+
+        if (!election) {
+            await db.rollback();
+
+            return {
+                status: 409,
+                body: {
+                    message: "No current election available"
+                }
+            };
+        }
+
+        if (!canEdit(election)) {
+            await db.rollback();
+
+            return {
+                status: 409,
+                body: {
+                    message:
+                        "Cannot modify positions in a completed or archived election"
+                }
+            };
+        }
+
+        const result = await callback(db, election);
+
+        if (result.status >= 400) {
+            await db.rollback();
+        } else {
+            await db.commit();
+        }
+
+        return result;
+
     } catch (error) {
-        console.error("Add position error:", error);
-        return res.status(500).json({ message: "Internal server error" });
+        try {
+            await db.rollback();
+        } catch (_) {}
+
+        throw error;
+
+    } finally {
+        db.release();
+    }
+}
+
+// ================= ADD OR REUSE POSITION =================
+
+exports.addPosition = async (req, res) => {
+    const {
+        election_id,
+        max_selection = 1,
+        display_order = 1
+    } = req.body || {};
+
+    const title = cleanTitle(req.body?.title);
+
+    if (!title || title.length > 100) {
+        return res.status(400).json({
+            message: "Valid position title is required"
+        });
+    }
+
+    if (
+        !validId(max_selection) ||
+        !validId(display_order)
+    ) {
+        return res.status(400).json({
+            message: "Invalid selection or display order"
+        });
+    }
+
+    if (
+        election_id !== undefined &&
+        election_id !== null &&
+        election_id !== "current" &&
+        !validId(election_id)
+    ) {
+        return res.status(400).json({
+            message: "Invalid election ID"
+        });
+    }
+
+    try {
+        const result = await withCurrentElection(
+            async (db, election) => {
+
+                // Older frontend requests can still send election_id.
+                // It must match the current election.
+                if (
+                    election_id !== undefined &&
+                    election_id !== null &&
+                    election_id !== "current" &&
+                    Number(election_id) !== election.election_id
+                ) {
+                    return {
+                        status: 409,
+                        body: {
+                            message:
+                                "The selected election is no longer current. Refresh the page."
+                        }
+                    };
+                }
+
+                const [existing] = await db.execute(
+                    `SELECT position_id, election_id, title,
+                            max_selection, display_order
+                     FROM positions
+                     WHERE election_id = ?
+                       AND LOWER(TRIM(title)) = LOWER(?)
+                     LIMIT 1`,
+                    [election.election_id, title]
+                );
+
+                if (existing.length) {
+                    return {
+                        status: 200,
+                        body: {
+                            message: "Existing position reused",
+                            position: existing[0]
+                        }
+                    };
+                }
+
+                const [insert] = await db.execute(
+                    `INSERT INTO positions
+                     (
+                         election_id,
+                         title,
+                         max_selection,
+                         display_order
+                     )
+                     VALUES (?, ?, ?, ?)`,
+                    [
+                        election.election_id,
+                        title,
+                        Number(max_selection),
+                        Number(display_order)
+                    ]
+                );
+
+                return {
+                    status: 201,
+                    body: {
+                        message: "Position added successfully",
+                        position: {
+                            position_id: insert.insertId,
+                            election_id: election.election_id,
+                            title,
+                            max_selection: Number(max_selection),
+                            display_order: Number(display_order)
+                        }
+                    }
+                };
+            }
+        );
+
+        return res.status(result.status).json(result.body);
+
+    } catch (error) {
+        return handleError(res, "Add position error:", error);
     }
 };
 
-// List positions for an election, in display order — each with its registered
-// candidates attached, matching the "Registered Candidate" table grouped by position
+// ================= GET POSITIONS WITH CANDIDATES =================
+
 exports.getPositions = async (req, res) => {
     try {
-        // :election_id can be a number, or the word "current" for whichever election is newest
-        const election = await resolveElection(req.params.election_id);
+        const election = await resolveElection(
+            req.params.election_id
+        );
+
         if (!election) {
-            return res.status(404).json({ message: "Election not found" });
+            return res.status(404).json({
+                message: "Election not found"
+            });
         }
+
         const election_id = election.election_id;
 
         const [positions] = await connection.execute(
-            "SELECT position_id, election_id, title, max_selection, display_order FROM positions WHERE election_id = ? ORDER BY display_order, position_id",
-            [election_id],
+            `SELECT position_id, election_id, title,
+                    max_selection, display_order
+             FROM positions
+             WHERE election_id = ?
+             ORDER BY display_order, position_id`,
+            [election_id]
         );
 
         const [candidates] = await connection.execute(
-            `SELECT c.candidate_id, c.name, c.course, c.grade_level, c.party_list, c.position_id, c.display_order
+            `SELECT c.candidate_id, c.name, c.course,
+                    c.grade_level, c.party_list,
+                    c.position_id, c.display_order
              FROM candidates c
-             JOIN positions p ON p.position_id = c.position_id
+             INNER JOIN positions p
+                ON p.position_id = c.position_id
+               AND p.election_id = c.election_id
              WHERE p.election_id = ?
-             ORDER BY c.position_id, c.display_order`,
-            [election_id],
+               AND c.election_id = ?
+             ORDER BY
+                c.position_id,
+                c.display_order,
+                c.candidate_id`,
+            [election_id, election_id]
         );
 
-        const result = positions.map((p) => ({
-            ...p,
-            candidates: candidates.filter((c) => c.position_id === p.position_id),
+        const result = positions.map(position => ({
+            ...position,
+            candidates: candidates.filter(
+                candidate =>
+                    candidate.position_id === position.position_id
+            )
         }));
 
-        return res.status(200).json({ positions: result });
+        return res.status(200).json({
+            election_id,
+            positions: result
+        });
+
     } catch (error) {
-        console.error("Get positions error:", error);
-        return res.status(500).json({ message: "Internal server error" });
+        return handleError(res, "Get positions error:", error);
     }
 };
 
-// Update a position's title, max_selection, or display_order
+// ================= UPDATE POSITION =================
+
 exports.updatePosition = async (req, res) => {
+    const { position_id } = req.params;
+
+    const {
+        max_selection,
+        display_order
+    } = req.body || {};
+
+    const title = req.body?.title === undefined
+        ? undefined
+        : cleanTitle(req.body.title);
+
+    if (!validId(position_id)) {
+        return res.status(400).json({
+            message: "Invalid position ID"
+        });
+    }
+
+    if (
+        (title !== undefined && (!title || title.length > 100)) ||
+        (max_selection !== undefined && !validId(max_selection)) ||
+        (display_order !== undefined && !validId(display_order))
+    ) {
+        return res.status(400).json({
+            message: "Invalid position fields"
+        });
+    }
+
     try {
-        const { position_id } = req.params;
-        const { title, max_selection, display_order } = req.body;
+        const result = await withCurrentElection(
+            async (db, election) => {
 
-        if (!title && max_selection == null && display_order == null) {
-            return res.status(400).json({ message: "Provide at least one of title, max_selection, display_order" });
-        }
+                const [existing] = await db.execute(
+                    `SELECT *
+                     FROM positions
+                     WHERE position_id = ?
+                     FOR UPDATE`,
+                    [Number(position_id)]
+                );
 
-        const [existing] = await connection.execute(
-            "SELECT * FROM positions WHERE position_id = ? LIMIT 1",
-            [position_id],
+                if (!existing.length) {
+                    return {
+                        status: 404,
+                        body: {
+                            message: "Position not found"
+                        }
+                    };
+                }
+
+                const old = existing[0];
+
+                if (old.election_id !== election.election_id) {
+                    return {
+                        status: 403,
+                        body: {
+                            message:
+                                "Cannot edit a position from another election"
+                        }
+                    };
+                }
+
+                const updated = {
+                    title: title ?? old.title,
+                    max_selection:
+                        max_selection === undefined
+                            ? old.max_selection
+                            : Number(max_selection),
+                    display_order:
+                        display_order === undefined
+                            ? old.display_order
+                            : Number(display_order)
+                };
+
+                const [duplicates] = await db.execute(
+                    `SELECT position_id
+                     FROM positions
+                     WHERE election_id = ?
+                       AND LOWER(TRIM(title)) = LOWER(?)
+                       AND position_id <> ?
+                     LIMIT 1`,
+                    [
+                        election.election_id,
+                        updated.title,
+                        Number(position_id)
+                    ]
+                );
+
+                if (duplicates.length) {
+                    return {
+                        status: 409,
+                        body: {
+                            message: "Position already exists"
+                        }
+                    };
+                }
+
+                await db.execute(
+                    `UPDATE positions
+                     SET title = ?,
+                         max_selection = ?,
+                         display_order = ?
+                     WHERE position_id = ?
+                       AND election_id = ?`,
+                    [
+                        updated.title,
+                        updated.max_selection,
+                        updated.display_order,
+                        Number(position_id),
+                        election.election_id
+                    ]
+                );
+
+                return {
+                    status: 200,
+                    body: {
+                        message: "Position updated successfully",
+                        position: {
+                            position_id: Number(position_id),
+                            election_id: election.election_id,
+                            ...updated
+                        }
+                    }
+                };
+            }
         );
-        if (existing.length === 0) {
-            return res.status(404).json({ message: "Position not found" });
-        }
 
-        const updated = {
-            title: title ?? existing[0].title,
-            max_selection: max_selection ?? existing[0].max_selection,
-            display_order: display_order ?? existing[0].display_order,
-        };
+        return res.status(result.status).json(result.body);
 
-        await connection.execute(
-            "UPDATE positions SET title = ?, max_selection = ?, display_order = ? WHERE position_id = ?",
-            [updated.title, updated.max_selection, updated.display_order, position_id],
-        );
-
-        return res.status(200).json({ message: "Position updated successfully", position: { position_id: Number(position_id), ...updated } });
     } catch (error) {
-        console.error("Update position error:", error);
-        return res.status(500).json({ message: "Internal server error" });
+        return handleError(res, "Update position error:", error);
     }
 };
 
-// Remove a position (cascades to its candidates, per the positions_ibfk_1 FK)
-exports.deletePosition = async (req, res) => {
-    try {
-        const { position_id } = req.params;
+// ================= DELETE POSITION =================
 
-        const [result] = await connection.execute(
-            "DELETE FROM positions WHERE position_id = ?",
-            [position_id],
+exports.deletePosition = async (req, res) => {
+    const { position_id } = req.params;
+
+    if (!validId(position_id)) {
+        return res.status(400).json({
+            message: "Invalid position ID"
+        });
+    }
+
+    try {
+        const result = await withCurrentElection(
+            async (db, election) => {
+
+                const [positions] = await db.execute(
+                    `SELECT position_id, election_id
+                     FROM positions
+                     WHERE position_id = ?
+                     FOR UPDATE`,
+                    [Number(position_id)]
+                );
+
+                if (!positions.length) {
+                    return {
+                        status: 404,
+                        body: {
+                            message: "Position not found"
+                        }
+                    };
+                }
+
+                if (
+                    positions[0].election_id !== election.election_id
+                ) {
+                    return {
+                        status: 403,
+                        body: {
+                            message:
+                                "Cannot delete a position from another election"
+                        }
+                    };
+                }
+
+                const [candidates] = await db.execute(
+                    `SELECT candidate_id
+                     FROM candidates
+                     WHERE position_id = ?
+                       AND election_id = ?
+                     LIMIT 1`,
+                    [
+                        Number(position_id),
+                        election.election_id
+                    ]
+                );
+
+                if (candidates.length) {
+                    return {
+                        status: 409,
+                        body: {
+                            message:
+                                "Cannot delete a position that has candidates."
+                        }
+                    };
+                }
+
+                const [deleted] = await db.execute(
+                    `DELETE FROM positions
+                     WHERE position_id = ?
+                       AND election_id = ?`,
+                    [
+                        Number(position_id),
+                        election.election_id
+                    ]
+                );
+
+                return {
+                    status: deleted.affectedRows ? 200 : 404,
+                    body: {
+                        message: deleted.affectedRows
+                            ? "Position deleted successfully"
+                            : "Position not found"
+                    }
+                };
+            }
         );
 
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ message: "Position not found" });
-        }
+        return res.status(result.status).json(result.body);
 
-        return res.status(200).json({ message: "Position deleted successfully" });
     } catch (error) {
-        console.error("Delete position error:", error);
-        return res.status(500).json({ message: "Internal server error" });
+        return handleError(res, "Delete position error:", error);
     }
 };

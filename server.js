@@ -27,7 +27,7 @@ app.use((req,res,next)=>{
 app.use('/api', routes)
 
 app.use(express.static(require('path').join(__dirname,'../voting-frontend-/Frontend')));
-const port=process.env.PORT || 3306;
+const port=process.env.PORT || 3000;
 app.listen(port, () => {
     console.log(`Server is running on port ${port}`);
 })

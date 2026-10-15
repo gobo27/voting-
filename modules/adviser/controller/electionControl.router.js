@@ -1,18 +1,53 @@
+
 const express = require("express");
 const router = express.Router();
+
 const electionControl = require("./electionControl.controller");
 const verifyToken = require("../../sheared/middleware");
 
-// --- Public: the live dashboard polls these, no login needed ---
-router.get("/:election_id/status", electionControl.getStatus);
-router.get("/:election_id/candidates", electionControl.getPublicCandidates);
+// Public endpoints
+router.get(
+    "/:election_id/status",
+    electionControl.getStatus
+);
 
-// --- Everything below requires a valid token AND super_admin or committee role ---
-router.use(verifyToken, verifyToken.requireRole("super_admin", "committee"));
+router.get(
+    "/:election_id/candidates",
+    electionControl.getPublicCandidates
+);
 
-router.patch("/:election_id/schedule", electionControl.setSchedule);
-router.post("/:election_id/start", electionControl.startElection);
-router.post("/:election_id/stop", electionControl.stopVoting);
-router.post("/:election_id/mask", electionControl.toggleMaskNames);
+// Protected endpoints
+router.use(
+    verifyToken,
+    verifyToken.requireRole(
+        "super_admin",
+        "committee",
+        "adviser"
+    )
+);
+
+// Election schedule
+router.patch(
+    "/:election_id/schedule",
+    electionControl.setSchedule
+);
+
+// Start election
+router.post(
+    "/:election_id/start",
+    electionControl.startElection
+);
+
+// Stop voting
+router.post(
+    "/:election_id/stop",
+    electionControl.stopVoting
+);
+
+// Mask candidate names
+router.post(
+    "/:election_id/mask",
+    electionControl.toggleMaskNames
+);
 
 module.exports = router;
